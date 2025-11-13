@@ -1,0 +1,124 @@
+---
+title: "YouTube Healthcare Dashboard"
+author: "Yujie Gong and Group"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, include=TRUE}
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# Read API key from environment (recommended)
+api_key <- "AIzaSyC2T1EUOXnuL9rYGaHEL2ZciSJjRLR_HuQ"
+
+if (api_key == "") {
+  stop("No API key found. Please set YOUTUBE_API_KEY in your environment.")
+}
+```
+
+
+```{r}
+query <- "mental health awareness"   # topic you want
+target_n <- 1000                     # number of videos you want
+max_per_page <- 50                   # YouTube search max allowed
+
+items_list <- list()
+n_collected <- 0
+page_token <- NULL
+
+while (n_collected < target_n) {
+
+  search_url <- paste0(
+    "https://www.googleapis.com/youtube/v3/search?",
+    "part=snippet&type=video",
+    "&maxResults=", max_per_page,
+    "&q=", URLencode(query),
+    "&key=", api_key,
+    if (!is.null(page_token)) paste0("&pageToken=", page_token) else ""
+  )
+  
+  resp <- GET(search_url)
+  stop_for_status(resp)
+  
+  search_data <- fromJSON(content(resp, "text"), flatten = TRUE)
+  
+  if (is.null(search_data$items)) break
+  
+  items_list[[length(items_list) + 1]] <- search_data$items
+  
+  n_collected <- sum(sapply(items_list, nrow))
+  message("Collected so far: ", n_collected)
+  
+  page_token <- search_data$nextPageToken
+  if (is.null(page_token)) break
+}
+
+# combine all pages
+search_items <- bind_rows(items_list)
+search_items <- head(search_items, target_n)
+
+video_ids <- search_items$id.videoId
+video_ids <- video_ids[!is.na(video_ids)]
+
+length(video_ids)   # number found
+```
+
+```{r}
+# Function to query YouTube statistics
+get_video_details <- function(ids, api_key) {
+  
+  chunks <- split(ids, ceiling(seq_along(ids) / 50))  # YouTube max=50 per call
+  
+  results <- lapply(chunks, function(chunk) {
+    
+    url <- paste0(
+      "https://www.googleapis.com/youtube/v3/videos?",
+      "part=snippet,statistics,contentDetails",
+      "&id=", paste(chunk, collapse = ","),
+      "&key=", api_key
+    )
+    
+    resp <- GET(url)
+    stop_for_status(resp)
+    
+    data <- fromJSON(content(resp, "text"), flatten = TRUE)
+    data$items
+  })
+  
+  bind_rows(results)
+}
+
+videos_raw <- get_video_details(video_ids, api_key)
+```
+
+```{r}
+youtube_df <- videos_raw %>%
+  transmute(
+    video_id     = id,
+    title        = snippet.title,
+    channel      = snippet.channelTitle,
+    published_at = as.Date(snippet.publishedAt),
+    views        = as.numeric(statistics.viewCount),
+    likes        = as.numeric(statistics.likeCount),
+    comments     = as.numeric(statistics.commentCount),
+    tags         = sapply(snippet.tags, function(x) {
+                    if (is.null(x)) NA_character_
+                    else paste(x, collapse = ", ")
+                  }),
+    duration_iso = contentDetails.duration
+  )
+
+head(youtube_df)
+```
+
+```{r}
+write.csv(youtube_df, "youtube_mental_health_1000.csv", row.names = FALSE)
+```
