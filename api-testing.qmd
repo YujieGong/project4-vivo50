@@ -122,3 +122,57 @@ head(youtube_df)
 ```{r}
 write.csv(youtube_df, "youtube_mental_health_1000.csv", row.names = FALSE)
 ```
+```{r}
+# Function B: Get Details (Stats + YouTube Classifications)
+get_video_details <- function(ids, key = api_key) {
+  
+  ids <- unique(na.omit(ids))
+  chunks <- split(ids, ceiling(seq_along(ids) / 50))
+  
+  all_details <- map_dfr(chunks, function(chunk) {
+    url <- paste0(
+      "https://www.googleapis.com/youtube/v3/videos?",
+      # WE ADD 'topicDetails' TO THE REQUEST HERE:
+      "part=snippet,statistics,contentDetails,topicDetails", 
+      "&id=", paste(chunk, collapse = ","),
+      "&key=", key
+    )
+    
+    resp <- GET(url)
+    if (status_code(resp) != 200) return(data.frame())
+    
+    data <- fromJSON(content(resp, "text", encoding = "UTF-8"), flatten = TRUE)
+    
+    # Extract the items
+    items <- data$items
+    
+    # RETURN A CLEAN DATAFRAME IMMEDIATELY
+    # This prevents issues if 'topicDetails' is missing for some videos
+    data.frame(
+      id = items$id,
+      
+      # BROAD CATEGORY (The ID number, e.g., "27" = Education)
+      youtube_category_id = items$snippet.categoryId, 
+      
+      # ALGORITHMIC TOPICS (List of URLs, we collapse them into one string)
+      youtube_topics = sapply(items$topicDetails.topicCategories, function(x) {
+        if (is.null(x)) return(NA)
+        # Clean the URL to just get the word (e.g., "Health" instead of the full wiki link)
+        clean_topics <- gsub("https://en.wikipedia.org/wiki/", "", x)
+        paste(clean_topics, collapse = ", ")
+      }),
+      
+      # STATISTICS
+      views = as.numeric(items$statistics.viewCount),
+      likes = as.numeric(items$statistics.likeCount),
+      duration = items$contentDetails.duration,
+      
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  return(all_details)
+}
+
+get_video_details 
+```

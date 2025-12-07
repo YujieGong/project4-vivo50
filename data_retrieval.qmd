@@ -1,0 +1,171 @@
+# six healthcare topics (3 Professional / Less Known to the Public (High Expertise Needed) and three trendy / Influencer-Popular Healthcare Topics)
+
+# professional: cardiovascular diseases, diabetes， antidepressants
+# unprofessional: probiotics, hormone balance, anti aging
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(readr)
+```
+
+# Set up API key
+```{r}
+api_key <- "AIzaSyC2T1EUOXnuL9rYGaHEL2ZciSJjRLR_HuQ" 
+
+if (api_key == "") {
+  stop("No API key found. Please set YOUTUBE_API_KEY in your environment.")
+}
+```
+
+# Helper: search videos by keyword
+
+```{r}
+search_youtube <- function(keyword, max_results = 200, api_key = api_key) {
+  base_url <- "https://www.googleapis.com/youtube/v3/search"
+  
+  all_results <- tibble()
+  next_page_token <- NULL
+  total <- 0
+  
+  repeat {
+    # YouTube API maxResults <= 50 per request
+    this_n <- min(50, max_results - total)
+    if (this_n <= 0) break
+    
+    res <- GET(
+      url = base_url,
+      query = list(
+        part = "snippet",
+        q = keyword,
+        type = "video",
+        maxResults = this_n,
+        pageToken = next_page_token,
+        key = api_key
+      )
+    )
+    
+    stop_for_status(res)
+    
+    cont <- content(res, as = "text", encoding = "UTF-8") |>
+      fromJSON(flatten = TRUE)
+    
+    if (length(cont$items) == 0) break
+    
+    df_page <- as_tibble(cont$items) |>
+      transmute(
+        video_id      = id.videoId,
+        title         = snippet.title,
+        description   = snippet.description,
+        published_at  = snippet.publishedAt,
+        channel_title = snippet.channelTitle
+      )
+    
+    all_results <- bind_rows(all_results, df_page)
+    total <- nrow(all_results)
+    
+    next_page_token <- cont$nextPageToken
+    if (is.null(next_page_token) || total >= max_results) break
+  }
+  
+  all_results
+}
+```
+
+# get stats for a vector of video IDs
+```{r}
+get_video_stats <- function(video_ids, api_key = api_key) {
+  base_url <- "https://www.googleapis.com/youtube/v3/videos"
+  
+  # Split into chunks of <= 50 IDs
+  id_chunks <- split(video_ids, ceiling(seq_along(video_ids) / 50))
+  
+  map_dfr(id_chunks, function(ids) {
+    res <- GET(
+      url = base_url,
+      query = list(
+        part = "statistics,contentDetails",
+        id   = paste(ids, collapse = ","),
+        key  = api_key
+      )
+    )
+    
+    stop_for_status(res)
+    
+    cont <- content(res, as = "text", encoding = "UTF-8") |>
+      fromJSON(flatten = TRUE)
+    
+    if (length(cont$items) == 0) return(tibble())
+    
+    as_tibble(cont$items) |>
+      transmute(
+        video_id      = id,
+        view_count    = as.numeric(statistics.viewCount),
+        like_count    = as.numeric(statistics.likeCount),
+        comment_count = as.numeric(statistics.commentCount),
+        duration      = contentDetails.duration
+      )
+  })
+}
+```
+
+# pipeline for one keyword
+```{r}
+get_topic_videos <- function(keyword, topic_label, professional_flag,
+                             n = 300, api_key = api_key) {
+  message("Collecting videos for keyword: ", keyword)
+  
+  meta <- search_youtube(keyword, max_results = n, api_key = api_key)
+  
+  # In case no videos returned
+  if (nrow(meta) == 0) return(tibble())
+  
+  stats <- get_video_stats(meta$video_id, api_key = api_key)
+  
+  meta |>
+    left_join(stats, by = "video_id") |>
+    mutate(
+      topic         = topic_label,
+      professional  = professional_flag
+    )
+}
+```
+
+
+#  Define your topics & keywords
+```{r}
+topics <- tribble(
+  ~keyword,              ~topic,               ~professional,
+  "cardiovascular disease", "cardiovascular_diseases", TRUE,
+  "diabetes",               "diabetes",             TRUE,
+  "antidepressants",        "antidepressants",      TRUE,
+  "probiotics",             "probiotics",           FALSE,
+  "hormone balance",        "hormone_balance",      FALSE,
+  "anti aging",             "anti_aging",           FALSE
+)
+```
+
+#  Run for all topics
+```{r}
+set.seed(123)
+
+videos_all <- topics |>
+  mutate(
+    data = pmap(
+      list(keyword, topic, professional),
+      ~ get_topic_videos(..1, ..2, ..3, n = 300, api_key = api_key)
+    )
+  ) |>
+  pull(data) |>
+  bind_rows()
+
+# Quick peek
+dplyr::glimpse(videos_all)
+```
+
+# save to csv
+```{r}
+write_csv(videos_all, "youtube_health_topics_6_keywords.csv")
+```
